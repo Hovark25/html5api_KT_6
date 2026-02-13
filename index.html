@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>КТ №6 — Fetch / WebSocket / SSE</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial;max-width:1000px;margin:18px auto;padding:0 12px}
+    .box{border:1px solid #ddd;border-radius:10px;padding:12px;margin:12px 0}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0}
+    input,select,button{padding:8px 10px}
+    pre{background:#f6f6f6;padding:10px;border-radius:8px;overflow:auto}
+    .muted{color:#666;font-size:12px}
+    .log{height:180px;overflow:auto;background:#111;color:#eee;padding:10px;border-radius:8px;font:12px/1.35 ui-monospace,Consolas}
+    .tag{display:inline-block;padding:2px 6px;border:1px solid #ddd;border-radius:999px;font-size:12px}
+  </style>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+</head>
+<body>
+  <h3>КТ №6. AJAX/Fetch, WebSockets, SSE</h3>
+
+  <div class="box">
+    <div class="row">
+      <span class="tag">Fake API</span>
+      <select id="apiSel">
+        <option value="users">users</option>
+        <option value="posts">posts</option>
+        <option value="comments">comments</option>
+        <option value="todos">todos</option>
+      </select>
+      <input id="limit" type="number" min="1" max="20" value="5" style="width:90px" />
+      <button onclick="loadFake()">Загрузить</button>
+      <span class="muted" id="fetchStatus"></span>
+    </div>
+    <pre id="out">Нажми “Загрузить”</pre>
+    <div class="muted">Источник: :contentReference[oaicite:1]{index=1}</div>
+  </div>
+
+  <div class="box">
+    <div class="row">
+      <span class="tag">WebSocket</span>
+      <select id="wsMode">
+        <option value="local">Local Socket.IO (http://localhost:3001)</option>
+        <option value="public">Public echo (wss://echo.websocket.events)</option>
+      </select>
+      <input id="name" placeholder="Имя" style="width:140px" />
+      <button onclick="wsConnect()">Connect</button>
+      <button onclick="wsDisconnect()">Disconnect</button>
+      <span class="muted" id="wsStatus">не подключено</span>
+    </div>
+
+    <div class="row">
+      <input id="msg" placeholder="Сообщение" style="flex:1;min-width:220px" />
+      <button onclick="wsSend()">Отправить</button>
+    </div>
+
+    <div class="log" id="wsLog"></div>
+    <div class="muted">Local режим выполняет требование “настроить сервер”; Public — запасной вариант, если сервер не запущен.</div>
+  </div>
+
+  <div class="box">
+    <div class="row">
+      <span class="tag">SSE</span>
+      <select id="sseMode">
+        <option value="local">Local SSE (http://localhost:3001/events)</option>
+        <option value="public">Public SSE (Wikimedia recentchange)</option>
+      </select>
+      <button onclick="sseStart()">Start</button>
+      <button onclick="sseStop()">Stop</button>
+      <span class="muted" id="sseStatus">остановлено</span>
+    </div>
+
+    <div class="log" id="sseLog"></div>
+    <div class="muted">Public SSE поток идёт с :contentReference[oaicite:2]{index=2}. Local SSE — из твоего server.js.</div>
+  </div>
+
+<script>
+  const out = document.getElementById("out");
+  const fetchStatus = document.getElementById("fetchStatus");
+
+  async function loadFake(){
+    const type = document.getElementById("apiSel").value;
+    const limit = Math.max(1, Math.min(20, Number(document.getElementById("limit").value || 5)));
+    const url = `https://jsonplaceholder.typicode.com/${type}?_limit=${limit}`;
+
+    fetchStatus.textContent = "загрузка...";
+    out.textContent = "";
+
+    try{
+      const res = await fetch(url);
+      if(!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      out.textContent = JSON.stringify(data, null, 2);
+      fetchStatus.textContent = "ok";
+    }catch(e){
+      fetchStatus.textContent = "ошибка";
+      out.textContent = "Fetch error: " + e.message;
+    }
+  }
+
+  let sio = null;
+  let ws = null;
+
+  const wsStatus = document.getElementById("wsStatus");
+  const wsLog = document.getElementById("wsLog");
+
+  function wlog(t){
+    const div = document.createElement("div");
+    div.textContent = t;
+    wsLog.appendChild(div);
+    wsLog.scrollTop = wsLog.scrollHeight;
+  }
+
+  function wsConnect(){
+    wsDisconnect();
+    const mode = document.getElementById("wsMode").value;
+    const name = document.getElementById("name").value.trim() || "anon";
+
+    if(mode === "local"){
+      try{
+        sio = io("http://localhost:3001", { transports: ["websocket"] });
+        sio.on("connect", () => {
+          wsStatus.textContent = "подключено (socket.io)";
+          sio.emit("join", name);
+          wlog("[sys] connected");
+        });
+        sio.on("chat", (p) => wlog(`[${p.time}] ${p.name}: ${p.msg}`));
+        sio.on("sys", (m) => wlog("[sys] " + m));
+        sio.on("connect_error", (e) => {
+          wsStatus.textContent = "ошибка подключения";
+          wlog("[err] " + e.message);
+        });
+      }catch(e){
+        wsStatus.textContent = "ошибка";
+        wlog("[err] " + e.message);
+      }
+      return;
+    }
+
+    ws = new WebSocket("wss://echo.websocket.events");
+    ws.onopen = () => { wsStatus.textContent = "подключено (echo)"; wlog("[sys] connected"); };
+    ws.onmessage = (ev) => wlog(ev.data);
+    ws.onerror = () => { wsStatus.textContent = "ошибка"; wlog("[err] websocket error"); };
+    ws.onclose = () => { wsStatus.textContent = "не подключено"; wlog("[sys] closed"); };
+    wlog(`[sys] name=${name}`);
+  }
+
+  function wsSend(){
+    const text = document.getElementById("msg").value;
+    if(!text) return;
+    document.getElementById("msg").value = "";
+
+    if(sio && sio.connected){
+      sio.emit("chat", text);
+      return;
+    }
+    if(ws && ws.readyState === 1){
+      ws.send(text);
+      wlog("[me] " + text);
+      return;
+    }
+    wlog("[err] not connected");
+  }
+
+  function wsDisconnect(){
+    if(sio){
+      try{ sio.disconnect(); }catch{}
+      sio = null;
+    }
+    if(ws){
+      try{ ws.close(); }catch{}
+      ws = null;
+    }
+    wsStatus.textContent = "не подключено";
+  }
+
+  let es = null;
+  const sseStatus = document.getElementById("sseStatus");
+  const sseLog = document.getElementById("sseLog");
+
+  function slog(t){
+    const div = document.createElement("div");
+    div.textContent = t;
+    sseLog.appendChild(div);
+    sseLog.scrollTop = sseLog.scrollHeight;
+  }
+
+  function sseStart(){
+    sseStop();
+    const mode = document.getElementById("sseMode").value;
+
+    const url = mode === "local"
+      ? "http://localhost:3001/events"
+      : "https://stream.wikimedia.org/v2/stream/recentchange";
+
+    try{
+      es = new EventSource(url);
+      sseStatus.textContent = "подключено";
+      es.onmessage = (ev) => {
+        if(mode === "local"){
+          try{
+            const obj = JSON.parse(ev.data);
+            slog(`[local] ${obj.time} | ${obj.title} | ${obj.text}`);
+          }catch{
+            slog("[local] " + ev.data);
+          }
+          return;
+        }
+
+        try{
+          const obj = JSON.parse(ev.data);
+          const title = obj.title || obj.meta?.domain || "event";
+          slog(`[public] ${title}`);
+        }catch{
+          slog("[public] event");
+        }
+      };
+
+      es.onerror = () => {
+        sseStatus.textContent = "ошибка/переподключение";
+      };
+    }catch(e){
+      sseStatus.textContent = "ошибка";
+      slog("[err] " + e.message);
+    }
+  }
+
+  function sseStop(){
+    if(es){
+      try{ es.close(); }catch{}
+      es = null;
+    }
+    sseStatus.textContent = "остановлено";
+  }
+</script>
+</body>
+</html>
